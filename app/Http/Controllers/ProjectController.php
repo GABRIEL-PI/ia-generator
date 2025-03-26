@@ -163,7 +163,7 @@ class ProjectController extends Controller
             abort(403, 'Você não tem permissão para acessar este projeto.');
         }
 
-        \Log::info('Dados recebidos para geração de post:', $request->all());
+        \Illuminate\Support\Facades\Log::info('Dados recebidos para geração de post:', $request->all());
 
         try {
             // Coleta dos dados do formulário
@@ -261,7 +261,7 @@ class ProjectController extends Controller
             $prompt .= "- Adicionar pontos-chave: " . ($keyTakeaway != 0 ? $keyTakeaway : 'Não') . ".\n";
             $prompt .= "- Categoria: " . (!empty($categoryId) ? $categoryId : 'Não definida') . ".\n";
 
-            \Log::info('Prompt gerado:', ['prompt' => $prompt]);
+            \Illuminate\Support\Facades\Log::info('Prompt gerado:', ['prompt' => $prompt]);
 
             // Criação do post no banco de dados com os dados mínimos e configurações
             $post = Post::create([
@@ -302,15 +302,15 @@ class ProjectController extends Controller
                     'content' => $content
                 ]);
 
-                \Log::info('Conteúdo gerado com sucesso para o post ID: ' . $post->id);
+                \Illuminate\Support\Facades\Log::info('Conteúdo gerado com sucesso para o post ID: ' . $post->id);
             } catch (\Exception $e) {
-                \Log::error('Erro ao gerar conteúdo com a OpenAI: ' . $e->getMessage());
+                \Illuminate\Support\Facades\Log::error('Erro ao gerar conteúdo com a OpenAI: ' . $e->getMessage());
             }
 
             return redirect()->route('posts.preview', $post->id)
                 ->with('success', 'Post criado com sucesso!');
         } catch (\Exception $e) {
-            \Log::error('Erro ao gerar post: ' . $e->getMessage(), [
+            \Illuminate\Support\Facades\Log::error('Erro ao gerar post: ' . $e->getMessage(), [
                 'exception'    => $e,
                 'trace'        => $e->getTraceAsString(),
                 'request_data' => $request->all()
@@ -321,9 +321,6 @@ class ProjectController extends Controller
                 ->withInput();
         }
     }
-
-
-
 
     /**
      * Gera conteúdo usando a API da OpenAI sem verificação SSL
@@ -362,7 +359,6 @@ class ProjectController extends Controller
         $result = json_decode($response->getBody(), true);
         return $result['choices'][0]['message']['content'];
     }
-
 
     /**
      * Exibe a visualização de um post
@@ -460,7 +456,7 @@ class ProjectController extends Controller
             }
             
             // Log dos dados que serão enviados
-            \Log::info('Dados a serem enviados para o WordPress:', $postData);
+            \Illuminate\Support\Facades\Log::info('Dados a serem enviados para o WordPress:', $postData);
             
             // Enviar para o WordPress
             $response = Http::withBasicAuth(
@@ -471,7 +467,7 @@ class ProjectController extends Controller
             ])->post($site->url . '/wp-json/wp/v2/posts', $postData);
             
             // Log da resposta completa para depuração
-            \Log::info('Resposta do WordPress:', [
+            \Illuminate\Support\Facades\Log::info('Resposta do WordPress:', [
                 'status' => $response->status(),
                 'body' => $response->body()
             ]);
@@ -489,7 +485,7 @@ class ProjectController extends Controller
                 return redirect()->back()->with('success', 'Post publicado com sucesso no WordPress!');
             } else {
                 // Log do erro
-                \Log::error('Erro ao publicar no WordPress: ' . $response->body());
+                \Illuminate\Support\Facades\Log::error('Erro ao publicar no WordPress: ' . $response->body());
                 
                 // Tentar extrair uma mensagem de erro mais amigável
                 $errorMessage = 'Erro desconhecido';
@@ -505,7 +501,7 @@ class ProjectController extends Controller
             }
         } catch (\Exception $e) {
             // Log do erro
-            \Log::error('Erro ao publicar post: ' . $e->getMessage(), [
+            \Illuminate\Support\Facades\Log::error('Erro ao publicar post: ' . $e->getMessage(), [
                 'exception' => $e,
                 'trace' => $e->getTraceAsString(),
             ]);
@@ -1040,5 +1036,149 @@ class ProjectController extends Controller
                 'message' => 'Erro ao gerar imagens: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Exibe a página de geração em massa
+     */
+    public function bulkGenerate()
+    {
+        $projects = Project::where('user_id', Auth::id())->get();
+        return view('projects.bulk-generate', compact('projects'));
+    }
+
+    /**
+     * Processa a solicitação de geração em massa
+     */
+    public function storeBulkGenerate(Request $request)
+    {
+        $validated = $request->validate([
+            'project_id' => 'required|exists:projects,id',
+            'titles' => 'required|array|min:1',
+            'titles.*' => 'required|string|min:10',
+            'language' => 'required|string',
+            'tone' => 'required|string',
+            'article_style' => 'required|string',
+            'pov' => 'required|string',
+            'words' => 'required|integer|min:300|max:5000',
+            'faq' => 'nullable|integer|min:0|max:7',
+            'key_takeaways' => 'nullable|integer|min:0|max:7',
+        ]);
+
+        // Verificar se o projeto pertence ao usuário
+        $project = Project::findOrFail($validated['project_id']);
+        if ($project->user_id !== Auth::id()) {
+            abort(403, 'Você não tem permissão para acessar este projeto.');
+        }
+
+        // Processar cada título
+        foreach ($validated['titles'] as $title) {
+            // Criar um novo post
+            Post::create([
+                'title' => $title,
+                'project_id' => $project->id,
+                'user_id' => Auth::id(),
+                'status' => 'pending',
+                'settings' => [
+                    'language' => $validated['language'],
+                    'tone' => $validated['tone'],
+                    'article_style' => $validated['article_style'],
+                    'pov' => $validated['pov'],
+                    'words' => $validated['words'],
+                    'faq' => $validated['faq'] ?? 0,
+                    'key_takeaways' => $validated['key_takeaways'] ?? 0,
+                ]
+            ]);
+        }
+
+        return redirect()->route('projects.index')
+            ->with('success', count($validated['titles']) . ' artigos foram enfileirados para geração.');
+    }
+
+    /**
+     * Gera títulos com base em palavras-chave usando IA
+     */
+    public function generateTitles(Request $request)
+    {
+        try {
+            // Log da requisição
+            Log::info('Recebida requisição para gerar títulos', [
+                'keywords' => $request->keywords,
+                'supportKeywords' => $request->supportKeywords,
+                'titleStyle' => $request->titleStyle
+            ]);
+
+            $request->validate([
+                'keywords' => 'required|string|min:3',
+                'supportKeywords' => 'nullable|string',
+                'titleStyle' => 'required|string'
+            ]);
+
+            // Instanciar o serviço OpenAI diretamente para teste
+            $openai = new OpenAIService();
+            
+            $prompt = "Gere 5 títulos de artigos para blog em português brasileiro baseados nas seguintes palavras-chave: '{$request->keywords}'";
+            
+            if (!empty($request->supportKeywords)) {
+                $prompt .= ". Palavras-chave de suporte: '{$request->supportKeywords}'";
+            }
+            
+            // Log do prompt
+            Log::info('Prompt gerado:', ['prompt' => $prompt]);
+            
+            try {
+                $response = $openai->generateContent($prompt);
+                
+                // Log da resposta
+                Log::info('Resposta da OpenAI:', ['response' => $response]);
+                
+                $titles = $this->extractTitlesFromResponse($response);
+                
+                return response()->json([
+                    'success' => true,
+                    'titles' => $titles
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Erro no OpenAI Service:', [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+                throw $e;
+            }
+        } catch (\Exception $e) {
+            Log::error('Erro ao gerar títulos:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Erro ao gerar títulos: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Extrai títulos da resposta da IA
+     */
+    private function extractTitlesFromResponse($response)
+    {
+        // Dividir a resposta por linhas
+        $lines = explode("\n", $response);
+        
+        // Filtrar linhas vazias e processar cada linha
+        $titles = [];
+        foreach ($lines as $line) {
+            $line = trim($line);
+            
+            // Remover numeração e outros caracteres no início
+            $line = preg_replace('/^(\d+\.|\-|\*|\•)\s*/', '', $line);
+            
+            if (!empty($line)) {
+                $titles[] = $line;
+            }
+        }
+        
+        return $titles;
     }
 } 

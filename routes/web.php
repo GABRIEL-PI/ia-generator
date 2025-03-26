@@ -48,6 +48,17 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/wordpress', [WordPressSiteController::class, 'store'])->name('wordpress.store');
     Route::delete('/wordpress/{wordPressSite}', [WordPressSiteController::class, 'destroy'])->name('wordpress.destroy');
     Route::post('/wordpress/{wordPressSite}/test', [WordPressSiteController::class, 'testConnection'])->name('wordpress.test');
+    
+    // Rotas para geração em massa
+    Route::get('/bulk-generate', [ProjectController::class, 'bulkGenerate'])
+        ->name('projects.bulk-generate');
+    
+    Route::post('/bulk-generate', [ProjectController::class, 'storeBulkGenerate'])
+        ->name('projects.bulk-generate.store');
+    
+    // Rota para gerar títulos via API
+    Route::post('/api/generate-titles', [ProjectController::class, 'generateTitles'])
+        ->name('api.generate-titles');
 });
 
 // Rotas para posts

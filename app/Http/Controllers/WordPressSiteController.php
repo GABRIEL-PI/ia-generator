@@ -14,7 +14,7 @@ class WordPressSiteController extends Controller
      */
     public function index()
     {
-        $sites = WordPressSite::where('user_id', auth()->id())->get();
+        $sites = WordPressSite::where('user_id', auth()->user()->id)->get();
         
         return view('wordpress.index', compact('sites'));
     }
