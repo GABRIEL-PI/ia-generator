@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use App\Services\OpenAIService;
+use App\Models\GeneratedTitle;
 
 class ProjectController extends Controller
 {
@@ -1096,22 +1097,23 @@ class ProjectController extends Controller
     }
 
     /**
-     * Gera títulos com base em palavras-chave usando IA
+     * Gera e salva títulos com base nas palavras-chave
      */
     public function generateTitles(Request $request)
     {
         try {
+            // Validar a requisição
+            $request->validate([
+                'keywords' => 'required|string',
+                'supportKeywords' => 'nullable|string',
+                'titleStyle' => 'nullable|string'
+            ]);
+
             // Log da requisição
-            Log::info('Recebida requisição para gerar títulos', [
+            Log::info('Gerando títulos', [
                 'keywords' => $request->keywords,
                 'supportKeywords' => $request->supportKeywords,
                 'titleStyle' => $request->titleStyle
-            ]);
-
-            $request->validate([
-                'keywords' => 'required|string|min:3',
-                'supportKeywords' => 'nullable|string',
-                'titleStyle' => 'required|string'
             ]);
 
             // Instanciar o serviço OpenAI diretamente para teste
@@ -1121,6 +1123,15 @@ class ProjectController extends Controller
             
             if (!empty($request->supportKeywords)) {
                 $prompt .= ". Palavras-chave de suporte: '{$request->supportKeywords}'";
+            }
+            
+            // Adicionar estilo do título ao prompt
+            if ($request->titleStyle == 'question') {
+                $prompt .= ". Os títulos devem ser em formato de pergunta.";
+            } elseif ($request->titleStyle == 'guide') {
+                $prompt .= ". Os títulos devem ser em formato de guia ou tutorial.";
+            } elseif ($request->titleStyle == 'evergreen') {
+                $prompt .= ". Os títulos devem ser do tipo evergreen (conteúdo atemporal).";
             }
             
             // Log do prompt
@@ -1134,9 +1145,24 @@ class ProjectController extends Controller
                 
                 $titles = $this->extractTitlesFromResponse($response);
                 
+                // Salvar os títulos no banco de dados
+                $savedTitles = [];
+                foreach ($titles as $title) {
+                    $savedTitle = GeneratedTitle::create([
+                        'title' => $title,
+                        'keywords' => $request->keywords,
+                        'support_keywords' => $request->supportKeywords,
+                        'style' => $request->titleStyle,
+                        'user_id' => auth()->id()
+                    ]);
+                    
+                    $savedTitles[] = $savedTitle;
+                }
+                
                 return response()->json([
                     'success' => true,
-                    'titles' => $titles
+                    'titles' => $titles,
+                    'saved_titles' => $savedTitles
                 ]);
             } catch (\Exception $e) {
                 Log::error('Erro no OpenAI Service:', [
@@ -1181,4 +1207,251 @@ class ProjectController extends Controller
         
         return $titles;
     }
+
+    /**
+     * Gera artigos com base nos títulos e parâmetros fornecidos
+     */
+    public function generateArticles(Request $request)
+    {
+        try {
+            // Validar a requisição
+            $request->validate([
+                'titles' => 'required|array|min:1',
+                'articleType' => 'required|string',
+                'tone' => 'required|string',
+                'wordCount' => 'required|numeric',
+            ]);
+
+            $titles = $request->titles;
+            $articleType = $request->articleType;
+            $tone = $request->tone;
+            $wordCount = $request->wordCount;
+            
+            // Log da requisição
+            Log::info('Iniciando geração de artigos', [
+                'count' => count($titles),
+                'articleType' => $articleType,
+                'tone' => $tone,
+                'wordCount' => $wordCount
+            ]);
+
+            // Criar um projeto para os artigos gerados
+            $project = Project::create([
+                'title' => 'Geração em Massa - ' . now()->format('d/m/Y H:i'),
+                'description' => 'Artigos gerados em massa',
+                'user_id' => auth()->id(),
+                'wordpress_site_id' => $request->wordpress_site_id ?? auth()->user()->wordPressSites->first()->id,
+                'settings' => [
+                    'articleType' => $articleType,
+                    'tone' => $tone,
+                    'wordCount' => $wordCount
+                ]
+            ]);
+
+            // Iniciar a geração de artigos
+            foreach ($titles as $index => $title) {
+                // Verificar se o título já existe no banco
+                $generatedTitle = GeneratedTitle::where('title', $title)
+                    ->where('user_id', auth()->id())
+                    ->first();
+                    
+                // Se não existir, criar um novo registro
+                if (!$generatedTitle) {
+                    $generatedTitle = GeneratedTitle::create([
+                        'title' => $title,
+                        'keywords' => 'Importado manualmente',
+                        'user_id' => auth()->id(),
+                        'project_id' => $project->id,
+                        'used' => true
+                    ]);
+                } else {
+                    // Marcar como usado e associar ao projeto
+                    $generatedTitle->used = true;
+                    $generatedTitle->project_id = $project->id;
+                    $generatedTitle->save();
+                }
+                
+                // Criar um registro de post para cada título
+                $post = Post::create([
+                    'title' => $title,
+                    'content' => 'Gerando conteúdo...',
+                    'project_id' => $project->id,
+                    'user_id' => auth()->id(),
+                    'status' => 'pending'
+                ]);
+                
+                // Gerar o conteúdo do artigo
+                $this->generateArticleContent($post, $articleType, $tone, $wordCount);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Geração de artigos iniciada com sucesso',
+                'project_id' => $project->id
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Erro ao gerar artigos:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Erro ao gerar artigos: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Gera o conteúdo de um artigo específico
+     */
+    private function generateArticleContent($post, $articleType, $tone, $wordCount)
+    {
+        try {
+            // Construir o prompt para a IA
+            $prompt = "Escreva um artigo de blog em português brasileiro com o título: \"{$post->title}\". ";
+            $prompt .= "O artigo deve ser do tipo {$articleType}, com tom {$tone} e aproximadamente {$wordCount} palavras. ";
+            $prompt .= "Inclua uma introdução envolvente, subtítulos relevantes, e uma conclusão. ";
+            $prompt .= "Formate o texto com parágrafos e subtítulos em HTML.";
+            
+            // Gerar o conteúdo usando a IA
+            $content = $this->openAIService->generateContent($prompt);
+            
+            // Atualizar o post com o conteúdo gerado
+            $post->content = $content;
+            $post->status = 'draft';
+            $post->save();
+            
+            Log::info('Artigo gerado com sucesso', ['post_id' => $post->id]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Erro ao gerar conteúdo do artigo:', [
+                'post_id' => $post->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            // Atualizar o status para erro
+            $post->status = 'error';
+            $post->content = "Erro ao gerar conteúdo: " . $e->getMessage();
+            $post->save();
+            
+            return false;
+        }
+    }
+
+    /**
+     * Processa a geração em massa de artigos
+     */
+    public function processBulkGenerate(Request $request)
+    {
+        try {
+            // Validar a requisição
+            $validated = $request->validate([
+                'titles' => 'required|string',
+                'article_style' => 'required|string',
+                'language' => 'required|string',
+                'pov' => 'required|string',
+                'tone' => 'required|string',
+                'words' => 'required|numeric',
+                'faq' => 'nullable|numeric',
+                'key_takeaways' => 'nullable|numeric',
+                'outlines_length' => 'nullable|string',
+                'intro_length' => 'nullable|string',
+                'paragraphs_length' => 'nullable|string',
+            ]);
+
+            // Decodificar os títulos
+            $titles = json_decode($validated['titles'], true);
+            
+            if (empty($titles)) {
+                return redirect()->back()->with('error', 'Nenhum título foi fornecido.');
+            }
+
+            // Log da requisição
+            Log::info('Iniciando geração em massa', [
+                'count' => count($titles),
+                'style' => $validated['article_style'],
+                'language' => $validated['language'],
+                'words' => $validated['words']
+            ]);
+
+            // Criar um projeto para os artigos gerados
+            $project = Project::create([
+                'title' => 'Geração em Massa - ' . now()->format('d/m/Y H:i'),
+                'description' => 'Artigos gerados em massa',
+                'user_id' => auth()->id(),
+                'wordpress_site_id' => auth()->user()->wordPressSites->first()->id ?? null,
+                'settings' => [
+                    'article_style' => $validated['article_style'],
+                    'language' => $validated['language'],
+                    'pov' => $validated['pov'],
+                    'tone' => $validated['tone'],
+                    'words' => $validated['words'],
+                    'faq' => $validated['faq'] ?? 0,
+                    'key_takeaways' => $validated['key_takeaways'] ?? 0
+                ]
+            ]);
+
+            // Iniciar a geração de artigos
+            foreach ($titles as $title) {
+                // Remover aspas extras se existirem
+                $title = str_replace('"', '', $title);
+                
+                // Verificar se o título já existe no banco
+                $generatedTitle = GeneratedTitle::where('title', $title)
+                    ->where('user_id', auth()->id())
+                    ->first();
+                    
+                // Se não existir, criar um novo registro
+                if (!$generatedTitle) {
+                    $generatedTitle = GeneratedTitle::create([
+                        'title' => $title,
+                        'keywords' => 'Geração em massa',
+                        'user_id' => auth()->id(),
+                        'project_id' => $project->id,
+                        'used' => true
+                    ]);
+                } else {
+                    // Marcar como usado e associar ao projeto
+                    $generatedTitle->used = true;
+                    $generatedTitle->project_id = $project->id;
+                    $generatedTitle->save();
+                }
+                
+                // Criar um registro de post para cada título
+                $post = Post::create([
+                    'title' => $title,
+                    'content' => 'Gerando conteúdo...',
+                    'project_id' => $project->id,
+                    'user_id' => auth()->id(),
+                    'status' => 'pending'
+                ]);
+                
+                // Gerar o conteúdo do artigo
+                $this->generateArticleContent(
+                    $post, 
+                    $validated['article_style'], 
+                    $validated['tone'], 
+                    $validated['words'],
+                    $validated['faq'] ?? 0,
+                    $validated['key_takeaways'] ?? 0,
+                    $validated['language']
+                );
+            }
+
+            return redirect()->route('projects.show', $project)
+                ->with('success', 'Geração de artigos iniciada com sucesso! Os artigos aparecerão aqui quando estiverem prontos.');
+            
+        } catch (\Exception $e) {
+            Log::error('Erro ao processar geração em massa:', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return redirect()->back()
+                ->with('error', 'Erro ao processar geração em massa: ' . $e->getMessage());
+        }
+    }
+
 } 

@@ -25,3 +25,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::post('/test-generate-post/{project}', [ProjectController::class, 'generatePost']);
 
+// Rota para gerar artigos
+Route::middleware('auth:sanctum')->post('/generate-articles', [ProjectController::class, 'generateArticles']);
+

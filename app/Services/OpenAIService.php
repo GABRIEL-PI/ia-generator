@@ -157,7 +157,11 @@ class OpenAIService
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
                 'Content-Type' => 'application/json',
-            ])->post('https://api.openai.com/v1/chat/completions', [
+            ])
+            ->withOptions([
+                'verify' => !app()->environment('local') // Desativa verificação SSL em ambiente local
+            ])
+            ->post('https://api.openai.com/v1/chat/completions', [
                 'model' => $model,
                 'messages' => [
                     ['role' => 'system', 'content' => 'Você é um assistente especializado em criar conteúdo para blogs em português brasileiro.'],

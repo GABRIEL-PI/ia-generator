@@ -50,11 +50,9 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/wordpress/{wordPressSite}/test', [WordPressSiteController::class, 'testConnection'])->name('wordpress.test');
     
     // Rotas para geração em massa
-    Route::get('/bulk-generate', [ProjectController::class, 'bulkGenerate'])
-        ->name('projects.bulk-generate');
+    Route::get('/bulk-generate', [ProjectController::class, 'bulkGenerate'])->name('projects.bulk-generate');
     
-    Route::post('/bulk-generate', [ProjectController::class, 'storeBulkGenerate'])
-        ->name('projects.bulk-generate.store');
+    Route::post('/bulk-generate', [ProjectController::class, 'processBulkGenerate'])->name('projects.bulk-generate.store');
     
     // Rota para gerar títulos via API
     Route::post('/api/generate-titles', [ProjectController::class, 'generateTitles'])
